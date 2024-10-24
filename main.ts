@@ -9,6 +9,8 @@ import {
 	Setting,
 	getFrontMatterInfo,
 } from "obsidian";
+// see: https://forum.babylonjs.com/t/local-caching-using-indexeddb/25337
+import Dexie, { type EntityTable } from 'dexie';
 
 declare module "obsidian" {
 	interface App {
@@ -47,20 +49,33 @@ const DEFAULT_SETTINGS: FrontMatterTimestampsSettings = {
 	debug: false,
 };
 
+interface FileInfo {
+	path: string;
+	size: number;
+	ctime: number;
+	mtime: number;
+}
+
 async function calculateChecksum(file: TFile, vault: Vault, ignoreFrontmatter?: boolean): Promise<string> {
 	let fileContent = await vault.read(file);
+	switch(ignoreFrontmatter) {
+	}
+	console.log(`checksum[${file.path}] calculating; ignoreFrontmatter: ${ignoreFrontmatter}`);
 	if (ignoreFrontmatter) {
+		console.log(`checksum[${file.path}] ignoring frontmatter`);
 		const frontMatterInfo = getFrontMatterInfo(fileContent);
 		if (frontMatterInfo.exists) {
 			fileContent = fileContent.substring(frontMatterInfo.contentStart);
 		}
 	}
+	console.log(`checksum[${file.path}] ${JSON.stringify(fileContent)}`);
 	const buffer = new TextEncoder().encode(fileContent);
 	const hashBuffer = await crypto.subtle.digest("SHA-256", buffer);
 	const hashArray = Array.from(new Uint8Array(hashBuffer));
 	const hashHex = hashArray
 		.map((b) => b.toString(16).padStart(2, "0"))
 		.join("");
+	console.log(`checksum[${file.path}] ${hashHex}`);
 	return hashHex;
 }
 
@@ -68,6 +83,10 @@ export default class FrontMatterTimestampsPlugin extends Plugin {
 	settings: FrontMatterTimestampsSettings;
 	private lastActiveFile: TFile | null = null;
 	private lastChecksum: string | null = null;
+	public db = new Dexie('FrontMatterTimestamps') as Dexie & {
+		files: EntityTable<FileInfo, 'path'>;
+	};
+
 	private isPathExcluded(filePath: string): boolean {
 		// Immediate return if there are no excluded folders
 		if (this.settings.excludedFolders.length === 0) {
@@ -88,6 +107,11 @@ export default class FrontMatterTimestampsPlugin extends Plugin {
 		await this.loadSettings();
 
 		this.addSettingTab(new FrontMatterTimestampsSettingTab(this.app, this));
+
+		// Schema declaration:
+		this.db.version(1).stores({
+			files: `&path`
+		});
 
 		// Register the command to manually update modified time
 		this.addCommand({
@@ -189,6 +213,16 @@ export default class FrontMatterTimestampsPlugin extends Plugin {
 				const lastFileExists = await this.app.vault.adapter.exists(
 					this.lastActiveFile.path
 				);
+				console.log("this.lastActiveFile && this.lastActiveFile.path !== currentFile.path")
+				console.log(this.lastActiveFile)
+				console.log(currentFile)
+				const currentTimeEpoch = Date.now()
+				const now = Date.now()
+				const mtime = this.lastActiveFile.stat.mtime;
+				const diff = now - this.lastActiveFile.stat.mtime;
+				console.log(`now: ${moment(now).format(this.settings.dateFormat)}`)
+				console.log(`mtime: ${moment(mtime).format(this.settings.dateFormat)}`)
+				console.log(`diff: ${now}`)
 				if (lastFileExists) {
 					const lastFileChecksum = await calculateChecksum(
 						this.lastActiveFile,
@@ -196,6 +230,9 @@ export default class FrontMatterTimestampsPlugin extends Plugin {
 						this.settings.ignoreFrontmatterChanges
 					);
 					if (this.lastChecksum !== lastFileChecksum) {
+						console.log("this.lastChecksum !== lastFileChecksum")
+						console.log(this.lastChecksum)
+						console.log(lastFileChecksum)
 						await this.updateModifiedTime(this.lastActiveFile);
 					}
 				}
@@ -269,7 +306,7 @@ export default class FrontMatterTimestampsPlugin extends Plugin {
 				return;
 			}
 
-			const currentTime = moment().format(this.settings.dateFormat);
+			const mtimeFormatted = moment(file.stat.mtime).format(this.settings.dateFormat);
 
 			await new Promise((resolve) =>
 				setTimeout(resolve, this.settings.delayAddingTimestamps)
@@ -279,7 +316,7 @@ export default class FrontMatterTimestampsPlugin extends Plugin {
 				file,
 				(frontmatter) => {
 					frontmatter[this.settings.modifiedPropertyName] =
-						currentTime;
+						mtimeFormatted;
 				}
 			);
 
