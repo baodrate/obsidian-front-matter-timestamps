@@ -7,6 +7,7 @@ import {
 	MarkdownView,
 	PluginSettingTab,
 	Setting,
+	getFrontMatterInfo,
 } from "obsidian";
 
 declare module "obsidian" {
@@ -21,6 +22,7 @@ declare module "obsidian" {
 interface FrontMatterTimestampsSettings {
 	autoUpdate: boolean;
 	autoAddTimestamps: boolean;
+	ignoreFrontmatterChanges: boolean;
 	createdPropertyName: string;
 	modifiedPropertyName: string;
 	dateFormat: string;
@@ -34,6 +36,7 @@ interface FrontMatterTimestampsSettings {
 const DEFAULT_SETTINGS: FrontMatterTimestampsSettings = {
 	autoUpdate: true,
 	autoAddTimestamps: true,
+	ignoreFrontmatterChanges: false,
 	createdPropertyName: "created",
 	modifiedPropertyName: "modified",
 	dateFormat: "YYYY-MM-DDTHH:mm:ssZ",
@@ -44,8 +47,14 @@ const DEFAULT_SETTINGS: FrontMatterTimestampsSettings = {
 	debug: false,
 };
 
-async function calculateChecksum(file: TFile, vault: Vault): Promise<string> {
-	const fileContent = await vault.read(file);
+async function calculateChecksum(file: TFile, vault: Vault, ignoreFrontmatter?: boolean): Promise<string> {
+	let fileContent = await vault.read(file);
+	if (ignoreFrontmatter) {
+		const frontMatterInfo = getFrontMatterInfo(fileContent);
+		if (frontMatterInfo.exists) {
+			fileContent = fileContent.substring(frontMatterInfo.contentStart);
+		}
+	}
 	const buffer = new TextEncoder().encode(fileContent);
 	const hashBuffer = await crypto.subtle.digest("SHA-256", buffer);
 	const hashArray = Array.from(new Uint8Array(hashBuffer));
@@ -130,7 +139,8 @@ export default class FrontMatterTimestampsPlugin extends Plugin {
 					if (fileExists) {
 						const currentChecksum = await calculateChecksum(
 							this.lastActiveFile,
-							this.app.vault
+							this.app.vault,
+							this.settings.ignoreFrontmatterChanges
 						);
 						if (this.lastChecksum !== currentChecksum) {
 							await this.updateModifiedTime(this.lastActiveFile);
@@ -182,7 +192,8 @@ export default class FrontMatterTimestampsPlugin extends Plugin {
 				if (lastFileExists) {
 					const lastFileChecksum = await calculateChecksum(
 						this.lastActiveFile,
-						this.app.vault
+						this.app.vault,
+						this.settings.ignoreFrontmatterChanges
 					);
 					if (this.lastChecksum !== lastFileChecksum) {
 						await this.updateModifiedTime(this.lastActiveFile);
@@ -204,7 +215,8 @@ export default class FrontMatterTimestampsPlugin extends Plugin {
 			this.lastActiveFile = currentFile;
 			this.lastChecksum = await calculateChecksum(
 				currentFile,
-				this.app.vault
+				this.app.vault,
+				this.settings.ignoreFrontmatterChanges
 			);
 		}
 	}
@@ -339,6 +351,18 @@ class FrontMatterTimestampsSettingTab extends PluginSettingTab {
 					.setValue(this.plugin.settings.autoAddTimestamps)
 					.onChange(async (value) => {
 						this.plugin.settings.autoAddTimestamps = value;
+						await this.plugin.saveSettings();
+					})
+			);
+
+		new Setting(containerEl)
+			.setName("Ignore frontmatter changes")
+			.setDesc("Ignore frontmatter properties when checking for file modification")
+			.addToggle((toggle) =>
+				toggle
+					.setValue(this.plugin.settings.ignoreFrontmatterChanges)
+					.onChange(async (value) => {
+						this.plugin.settings.ignoreFrontmatterChanges = value;
 						await this.plugin.saveSettings();
 					})
 			);
